@@ -11,11 +11,11 @@ TagManager:
   - 
   - Water
   - UI
-  - 
-  - 
-  - 
-  - 
-  - 
+  - Floor
+  - Goal
+  - Box
+  - Player
+  - Wall
   - 
   - 
   - 
@@ -40,4 +40,22 @@ TagManager:
   m_SortingLayers:
   - name: Default
     uniqueID: 0
+    locked: 0
+  - name: Background
+    uniqueID: 71004659
+    locked: 0
+  - name: Floor
+    uniqueID: 2079130639
+    locked: 0
+  - name: Goal
+    uniqueID: 353878317
+    locked: 0
+  - name: Box
+    uniqueID: 1858890273
+    locked: 0
+  - name: Player
+    uniqueID: 3149312193
+    locked: 0
+  - name: Wall
+    uniqueID: 4131887389
     locked: 0

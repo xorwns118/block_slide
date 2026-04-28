@@ -12,6 +12,8 @@ namespace GridShift.Data
         public List<Vector2Int> walls = new List<Vector2Int>();
         public List<Vector2Int> goals = new List<Vector2Int>();
         public List<Vector2Int> boxes = new List<Vector2Int>();
+        [Min(-1)] public int optimalMoveCount = -1;
+        [Min(-1)] public int optimalPushCount = -1;
 
         public bool IsInside(Vector2Int position)
         {
