@@ -1,7 +1,9 @@
 #if UNITY_EDITOR
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using GridShift.Data;
+using GridShift.Gameplay;
 using UnityEditor;
 using UnityEngine;
 
@@ -41,6 +43,7 @@ namespace GridShift.Editor
 
             EditorGUILayout.Space(8f);
             DrawLevelSettings();
+            DrawOptimalSolution();
             DrawToolSelector();
             DrawGrid();
             DrawActions();
@@ -77,7 +80,9 @@ namespace GridShift.Editor
                 currentLevel.width = Mathf.Max(1, width);
                 currentLevel.height = Mathf.Max(1, height);
                 ClampDataToBounds();
+                InvalidateOptimalSolution();
                 MarkDirty();
+                ValidateLevel();
             }
         }
 
@@ -86,10 +91,27 @@ namespace GridShift.Editor
             selectedTool = (PaintTool)GUILayout.Toolbar((int)selectedTool, new[] { "Wall", "Goal", "Box", "Player", "Erase" });
         }
 
+        private void DrawOptimalSolution()
+        {
+            EditorGUILayout.Space(8f);
+            EditorGUILayout.LabelField("Optimal Solution", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("Minimum Moves", currentLevel.optimalMoveCount >= 0 ? currentLevel.optimalMoveCount.ToString() : "Not calculated");
+            EditorGUILayout.LabelField("Minimum Pushes", currentLevel.optimalPushCount >= 0 ? currentLevel.optimalPushCount.ToString() : "Not calculated");
+
+            if (GUILayout.Button("Calculate Optimal Solution"))
+            {
+                CalculateOptimalSolution();
+            }
+        }
+
         private void DrawGrid()
         {
             EditorGUILayout.Space(8f);
             scrollPosition = EditorGUILayout.BeginScrollView(scrollPosition);
+
+            List<Vector2Int> walls = currentLevel.walls ?? new List<Vector2Int>();
+            List<Vector2Int> goals = currentLevel.goals ?? new List<Vector2Int>();
+            List<Vector2Int> boxes = currentLevel.boxes ?? new List<Vector2Int>();
 
             for (int y = currentLevel.height - 1; y >= 0; y--)
             {
@@ -97,9 +119,9 @@ namespace GridShift.Editor
                 for (int x = 0; x < currentLevel.width; x++)
                 {
                     Vector2Int position = new Vector2Int(x, y);
-                    string label = GetCellLabel(position);
+                    string label = GetCellLabel(position, walls, goals, boxes);
                     Color previousColor = GUI.backgroundColor;
-                    GUI.backgroundColor = GetCellColor(position);
+                    GUI.backgroundColor = GetCellColor(position, walls, goals, boxes);
 
                     if (GUILayout.Button(label, GUILayout.Width(36f), GUILayout.Height(30f)))
                     {
@@ -129,15 +151,54 @@ namespace GridShift.Editor
                 if (EditorUtility.DisplayDialog("Clear Level", "Remove all walls, goals, boxes, and reset player start?", "Clear", "Cancel"))
                 {
                     UnityEditor.Undo.RecordObject(currentLevel, "Clear GridShift Level");
+                    EnsureListsExist();
                     currentLevel.walls.Clear();
                     currentLevel.goals.Clear();
                     currentLevel.boxes.Clear();
                     currentLevel.playerStart = new Vector2Int(-1, -1);
+                    InvalidateOptimalSolution();
                     MarkDirty();
+                    ValidateLevel();
                 }
             }
 
             EditorGUILayout.EndHorizontal();
+        }
+
+        private void CalculateOptimalSolution()
+        {
+            if (currentLevel == null)
+            {
+                return;
+            }
+
+            ValidateLevel();
+            if (HasValidationWarnings())
+            {
+                validationMessages.Insert(0, "Resolve validation issues before calculating the optimal solution.");
+                return;
+            }
+
+            LevelSolution solution = LevelOptimalSolver.FindOptimalSolution(currentLevel);
+            UnityEditor.Undo.RecordObject(currentLevel, "Calculate GridShift Optimal Solution");
+
+            if (solution.IsSolved)
+            {
+                currentLevel.optimalMoveCount = solution.MoveCount;
+                currentLevel.optimalPushCount = solution.PushCount;
+                validationMessages.Clear();
+                validationMessages.Add($"OK: Optimal solution saved. Moves: {solution.MoveCount}, Pushes: {solution.PushCount}, States: {solution.ExploredStateCount}.");
+            }
+            else
+            {
+                currentLevel.optimalMoveCount = -1;
+                currentLevel.optimalPushCount = -1;
+                validationMessages.Clear();
+                validationMessages.Add($"Optimal solution failed: {solution.Reason}");
+            }
+
+            MarkDirty();
+            AssetDatabase.SaveAssets();
         }
 
         private void DrawValidationMessages()
@@ -153,6 +214,11 @@ namespace GridShift.Editor
                 MessageType type = message.StartsWith("OK") ? MessageType.Info : MessageType.Warning;
                 EditorGUILayout.HelpBox(message, type);
             }
+        }
+
+        private bool HasValidationWarnings()
+        {
+            return validationMessages.Any(message => !message.StartsWith("OK"));
         }
 
         private void CreateLevelData()
@@ -183,15 +249,33 @@ namespace GridShift.Editor
                 return;
             }
 
+            ValidateLevel();
+            string beforeNormalizeSignature = BuildLevelSignature();
             ClampDataToBounds();
             RemoveDuplicates();
+            if (beforeNormalizeSignature != BuildLevelSignature())
+            {
+                InvalidateOptimalSolution();
+            }
+
             MarkDirty();
             AssetDatabase.SaveAssets();
             ValidateLevel();
+
+            if (HasValidationWarnings())
+            {
+                validationMessages.Insert(0, "Saved and normalized. Remaining issues are listed below.");
+            }
+            else
+            {
+                validationMessages.Clear();
+                validationMessages.Add("OK: LevelData saved, normalized, and valid.");
+            }
         }
 
         private void Paint(Vector2Int position)
         {
+            EnsureListsExist();
             UnityEditor.Undo.RecordObject(currentLevel, "Paint GridShift Cell");
 
             switch (selectedTool)
@@ -200,6 +284,10 @@ namespace GridShift.Editor
                     AddUnique(currentLevel.walls, position);
                     currentLevel.goals.Remove(position);
                     currentLevel.boxes.Remove(position);
+                    if (currentLevel.playerStart == position)
+                    {
+                        currentLevel.playerStart = new Vector2Int(-1, -1);
+                    }
                     break;
                 case PaintTool.Goal:
                     if (!currentLevel.walls.Contains(position))
@@ -211,10 +299,14 @@ namespace GridShift.Editor
                     if (!currentLevel.walls.Contains(position))
                     {
                         AddUnique(currentLevel.boxes, position);
+                        if (currentLevel.playerStart == position)
+                        {
+                            currentLevel.playerStart = new Vector2Int(-1, -1);
+                        }
                     }
                     break;
                 case PaintTool.PlayerStart:
-                    if (!currentLevel.walls.Contains(position))
+                    if (!currentLevel.walls.Contains(position) && !currentLevel.boxes.Contains(position))
                     {
                         currentLevel.playerStart = position;
                     }
@@ -231,15 +323,16 @@ namespace GridShift.Editor
             }
 
             RemoveDuplicates();
+            InvalidateOptimalSolution();
             MarkDirty();
         }
 
-        private string GetCellLabel(Vector2Int position)
+        private string GetCellLabel(Vector2Int position, List<Vector2Int> walls, List<Vector2Int> goals, List<Vector2Int> boxes)
         {
             bool isPlayer = currentLevel.playerStart == position;
-            bool hasWall = currentLevel.walls.Contains(position);
-            bool hasGoal = currentLevel.goals.Contains(position);
-            bool hasBox = currentLevel.boxes.Contains(position);
+            bool hasWall = walls.Contains(position);
+            bool hasGoal = goals.Contains(position);
+            bool hasBox = boxes.Contains(position);
 
             if (isPlayer)
             {
@@ -269,29 +362,29 @@ namespace GridShift.Editor
             return ".";
         }
 
-        private Color GetCellColor(Vector2Int position)
+        private Color GetCellColor(Vector2Int position, List<Vector2Int> walls, List<Vector2Int> goals, List<Vector2Int> boxes)
         {
             if (currentLevel.playerStart == position)
             {
                 return new Color(0.4f, 0.8f, 1f);
             }
 
-            if (currentLevel.walls.Contains(position))
+            if (walls.Contains(position))
             {
                 return Color.gray;
             }
 
-            if (currentLevel.boxes.Contains(position) && currentLevel.goals.Contains(position))
+            if (boxes.Contains(position) && goals.Contains(position))
             {
                 return new Color(0.5f, 1f, 0.5f);
             }
 
-            if (currentLevel.boxes.Contains(position))
+            if (boxes.Contains(position))
             {
                 return new Color(1f, 0.75f, 0.3f);
             }
 
-            if (currentLevel.goals.Contains(position))
+            if (goals.Contains(position))
             {
                 return new Color(0.6f, 1f, 0.6f);
             }
@@ -309,6 +402,10 @@ namespace GridShift.Editor
                 return;
             }
 
+            List<Vector2Int> walls = GetSafeList("Wall", currentLevel.walls);
+            List<Vector2Int> goals = GetSafeList("Goal", currentLevel.goals);
+            List<Vector2Int> boxes = GetSafeList("Box", currentLevel.boxes);
+
             if (currentLevel.width < 1 || currentLevel.height < 1)
             {
                 validationMessages.Add("Width and Height must be 1 or greater.");
@@ -319,13 +416,23 @@ namespace GridShift.Editor
                 validationMessages.Add("PlayerStart is not set or is outside the level bounds.");
             }
 
-            if (currentLevel.boxes.Count != currentLevel.goals.Count)
+            if (walls.Contains(currentLevel.playerStart))
+            {
+                validationMessages.Add($"PlayerStart overlaps Wall at {currentLevel.playerStart}.");
+            }
+
+            if (boxes.Contains(currentLevel.playerStart))
+            {
+                validationMessages.Add($"PlayerStart overlaps Box at {currentLevel.playerStart}.");
+            }
+
+            if (boxes.Count != goals.Count)
             {
                 validationMessages.Add("Box count and Goal count must be the same.");
             }
 
-            HashSet<Vector2Int> wallSet = new HashSet<Vector2Int>(currentLevel.walls);
-            foreach (Vector2Int box in currentLevel.boxes)
+            HashSet<Vector2Int> wallSet = new HashSet<Vector2Int>(walls);
+            foreach (Vector2Int box in boxes)
             {
                 if (wallSet.Contains(box))
                 {
@@ -333,7 +440,7 @@ namespace GridShift.Editor
                 }
             }
 
-            foreach (Vector2Int goal in currentLevel.goals)
+            foreach (Vector2Int goal in goals)
             {
                 if (wallSet.Contains(goal))
                 {
@@ -341,14 +448,33 @@ namespace GridShift.Editor
                 }
             }
 
-            AddOutOfBoundsMessages("Wall", currentLevel.walls);
-            AddOutOfBoundsMessages("Goal", currentLevel.goals);
-            AddOutOfBoundsMessages("Box", currentLevel.boxes);
+            AddOutOfBoundsMessages("Wall", walls);
+            AddOutOfBoundsMessages("Goal", goals);
+            AddOutOfBoundsMessages("Box", boxes);
+            AddDuplicateMessages("Wall", walls);
+            AddDuplicateMessages("Goal", goals);
+            AddDuplicateMessages("Box", boxes);
+
+            if (validationMessages.Count == 0 && !LevelSolvabilityChecker.IsSolvable(currentLevel, out string solveReason))
+            {
+                validationMessages.Add($"Level is not solvable: {solveReason}");
+            }
 
             if (validationMessages.Count == 0)
             {
                 validationMessages.Add("OK: LevelData is valid.");
             }
+        }
+
+        private List<Vector2Int> GetSafeList(string label, List<Vector2Int> positions)
+        {
+            if (positions != null)
+            {
+                return positions;
+            }
+
+            validationMessages.Add($"{label} list is null.");
+            return new List<Vector2Int>();
         }
 
         private void AddOutOfBoundsMessages(string label, IEnumerable<Vector2Int> positions)
@@ -362,8 +488,28 @@ namespace GridShift.Editor
             }
         }
 
+        private void AddDuplicateMessages(string label, IEnumerable<Vector2Int> positions)
+        {
+            HashSet<Vector2Int> seen = new HashSet<Vector2Int>();
+            HashSet<Vector2Int> reported = new HashSet<Vector2Int>();
+
+            foreach (Vector2Int position in positions)
+            {
+                if (seen.Add(position))
+                {
+                    continue;
+                }
+
+                if (reported.Add(position))
+                {
+                    validationMessages.Add($"{label} has duplicate position at {position}.");
+                }
+            }
+        }
+
         private void ClampDataToBounds()
         {
+            EnsureListsExist();
             currentLevel.walls.RemoveAll(position => !currentLevel.IsInside(position));
             currentLevel.goals.RemoveAll(position => !currentLevel.IsInside(position));
             currentLevel.boxes.RemoveAll(position => !currentLevel.IsInside(position));
@@ -376,9 +522,77 @@ namespace GridShift.Editor
 
         private void RemoveDuplicates()
         {
+            EnsureListsExist();
             currentLevel.walls = currentLevel.walls.Distinct().ToList();
             currentLevel.goals = currentLevel.goals.Distinct().ToList();
             currentLevel.boxes = currentLevel.boxes.Distinct().ToList();
+        }
+
+        private void InvalidateOptimalSolution()
+        {
+            currentLevel.optimalMoveCount = -1;
+            currentLevel.optimalPushCount = -1;
+        }
+
+        private string BuildLevelSignature()
+        {
+            StringBuilder builder = new StringBuilder();
+            builder.Append(currentLevel.width);
+            builder.Append('x');
+            builder.Append(currentLevel.height);
+            builder.Append('|');
+            builder.Append(currentLevel.playerStart.x);
+            builder.Append(',');
+            builder.Append(currentLevel.playerStart.y);
+            builder.Append('|');
+            AppendPositions(builder, currentLevel.walls);
+            builder.Append('|');
+            AppendPositions(builder, currentLevel.goals);
+            builder.Append('|');
+            AppendPositions(builder, currentLevel.boxes);
+            return builder.ToString();
+        }
+
+        private static void AppendPositions(StringBuilder builder, IEnumerable<Vector2Int> positions)
+        {
+            if (positions == null)
+            {
+                builder.Append("null");
+                return;
+            }
+
+            List<Vector2Int> sorted = positions.ToList();
+            sorted.Sort((a, b) =>
+            {
+                int yCompare = a.y.CompareTo(b.y);
+                return yCompare != 0 ? yCompare : a.x.CompareTo(b.x);
+            });
+
+            foreach (Vector2Int position in sorted)
+            {
+                builder.Append(position.x);
+                builder.Append(',');
+                builder.Append(position.y);
+                builder.Append(';');
+            }
+        }
+
+        private void EnsureListsExist()
+        {
+            if (currentLevel.walls == null)
+            {
+                currentLevel.walls = new List<Vector2Int>();
+            }
+
+            if (currentLevel.goals == null)
+            {
+                currentLevel.goals = new List<Vector2Int>();
+            }
+
+            if (currentLevel.boxes == null)
+            {
+                currentLevel.boxes = new List<Vector2Int>();
+            }
         }
 
         private static void AddUnique(List<Vector2Int> list, Vector2Int position)

@@ -98,6 +98,7 @@ namespace GridShift.Data
 
             GameObject instance = Object.Instantiate(prefab, gridManager.GridToWorld(position), Quaternion.identity, parent);
             instance.name = $"{fallbackName}_{position.x}_{position.y}";
+            ApplyCellScale(instance);
         }
 
         private PlayerView SpawnPlayer(Vector2Int position, Transform parent)
@@ -110,6 +111,7 @@ namespace GridShift.Data
 
             GameObject instance = Object.Instantiate(playerPrefab, gridManager.GridToWorld(position), Quaternion.identity, parent);
             instance.name = "Player";
+            ApplyCellScale(instance);
 
             PlayerView playerView = instance.GetComponent<PlayerView>();
             if (playerView == null)
@@ -144,6 +146,7 @@ namespace GridShift.Data
 
                 GameObject instance = Object.Instantiate(boxPrefab, gridManager.GridToWorld(position), Quaternion.identity, parent);
                 instance.name = $"Box_{position.x}_{position.y}";
+                ApplyCellScale(instance);
 
                 BoxView boxView = instance.GetComponent<BoxView>();
                 if (boxView == null)
@@ -156,6 +159,18 @@ namespace GridShift.Data
             }
 
             return boxes;
+        }
+
+        private void ApplyCellScale(GameObject instance)
+        {
+            if (instance == null || gridManager == null)
+            {
+                return;
+            }
+
+            // Prefabs are expected to be authored at one logical cell in size.
+            // Their original scale is preserved as an art-side adjustment, then multiplied by CellSize.
+            instance.transform.localScale = instance.transform.localScale * gridManager.CellSize;
         }
     }
 }
